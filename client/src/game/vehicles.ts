@@ -3,8 +3,8 @@
 
 import * as THREE from 'three';
 import {
-  SpatialGrid, VEHICLES, VehicleInfo, VehicleKind, VehicleSpec,
-  clamp, groundHeight, resolveCircleAABB, wrapAngle,
+  SpatialGrid, VEHICLES, VehicleInfo, VehicleKind, VehicleSpec, WORLD_BOUNDS,
+  clamp, groundHeight, resolveCircleAABB,
 } from '@vice/shared';
 import { InterpBuffer } from '../net/interpolation.js';
 import type { Input } from '../input.js';
@@ -249,6 +249,9 @@ export class VehicleManager {
       this.onCrash(v.pos, Math.min(1, crashed / 25));
     }
 
+    // keep cars on the map: bounds, and out of the ocean (x >= 3)
+    v.pos.x = clamp(v.pos.x, 3, WORLD_BOUNDS.maxX);
+    v.pos.z = clamp(v.pos.z, WORLD_BOUNDS.minZ, WORLD_BOUNDS.maxZ);
     v.pos.y = groundHeight(v.pos.x, v.pos.z);
     v.group.rotation.y = v.yaw;
     this.spinWheels(v, d.speed, dt, steer);
@@ -287,7 +290,12 @@ export class VehicleManager {
               impact = Math.max(impact, into);
               v.drive.velX += nx * into;
               v.drive.velZ += nz * into;
-              v.drive.speed *= 0.55;
+              // scale the speed penalty by how head-on the impact is: a
+              // grazing scrape (into << speed) barely slows, a head-on
+              // (into ≈ speed) nearly stops. Flat *0.55 per contact glued
+              // cars to walls at any angle.
+              const sev = Math.min(1, into / Math.max(Math.abs(v.drive.speed), 1));
+              v.drive.speed *= 1 - 0.6 * sev;
             }
           }
         }

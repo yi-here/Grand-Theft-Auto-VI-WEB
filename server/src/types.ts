@@ -22,6 +22,8 @@ export interface SPlayer {
   lastStateAt: number;
   lastShotAt: Partial<Record<WeaponKind, number>>;
   lastChatAt: number;
+  /** recent (time, pos) for lag-compensated hit validation */
+  posHistory: { t: number; pos: [number, number, number] }[];
   spawnProtUntil: number;
   heat: number;
   wantedLevel: number;

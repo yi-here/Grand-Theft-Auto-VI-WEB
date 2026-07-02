@@ -170,25 +170,41 @@ export class SpatialGrid {
   }
 
   /**
-   * March a ray through the grid; returns nearest hit distance or null.
-   * Good enough for LOS + camera occlusion (static world only).
+   * March a ray through the grid, returning nearest hit distance or null.
+   * Uses Amanatides–Woo DDA over the XZ cell grid so EVERY cell the ray
+   * crosses is visited (point-sampling skipped diagonal corner cells and
+   * let bullets/camera pass through building corners). Buildings are
+   * full-height, so 2D traversal over XZ is sufficient.
    */
   raycast(
     ox: number, oy: number, oz: number,
     dx: number, dy: number, dz: number,
     maxT: number,
   ): number | null {
-    // normalize horizontal marching over cells; sample cells along the ray
-    const step = this.cellSize * 0.9;
     const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (len < 1e-9) return null;
     const nx = dx / len, ny = dy / len, nz = dz / len;
+    const cs = this.cellSize;
+
+    let cx = Math.floor(ox / cs);
+    let cz = Math.floor(oz / cs);
+    const stepX = nx > 0 ? 1 : -1;
+    const stepZ = nz > 0 ? 1 : -1;
+
+    // distance along the ray to the next cell boundary on each axis
+    const tDeltaX = Math.abs(nx) < 1e-9 ? Infinity : Math.abs(cs / nx);
+    const tDeltaZ = Math.abs(nz) < 1e-9 ? Infinity : Math.abs(cs / nz);
+    const nextBoundaryX = (cx + (stepX > 0 ? 1 : 0)) * cs;
+    const nextBoundaryZ = (cz + (stepZ > 0 ? 1 : 0)) * cs;
+    let tMaxX = Math.abs(nx) < 1e-9 ? Infinity : (nextBoundaryX - ox) / nx;
+    let tMaxZ = Math.abs(nz) < 1e-9 ? Infinity : (nextBoundaryZ - oz) / nz;
+
     let best: number | null = null;
     const tested = new Set<number>();
-    for (let t = 0; t <= maxT + step; t += step) {
-      const px = ox + nx * Math.min(t, maxT);
-      const pz = oz + nz * Math.min(t, maxT);
-      const arr = this.cells.get(Math.floor(px / this.cellSize) + ',' + Math.floor(pz / this.cellSize));
+    let t = 0;
+    // +2 guard iterations so the cell at the very end of the ray is tested
+    for (let guard = 0; guard < 4096 && t <= maxT; guard++) {
+      const arr = this.cells.get(cx + ',' + cz);
       if (arr) {
         for (const i of arr) {
           if (tested.has(i)) continue;
@@ -197,8 +213,17 @@ export class SpatialGrid {
           if (hit !== null && (best === null || hit < best)) best = hit;
         }
       }
-      if (best !== null && best < t) break; // can't find closer hits further along
-      if (t >= maxT) break;
+      // once we have a hit closer than the current cell entry, nothing nearer remains
+      if (best !== null && best <= t) break;
+      if (tMaxX < tMaxZ) {
+        t = tMaxX;
+        tMaxX += tDeltaX;
+        cx += stepX;
+      } else {
+        t = tMaxZ;
+        tMaxZ += tDeltaZ;
+        cz += stepZ;
+      }
     }
     return best;
   }

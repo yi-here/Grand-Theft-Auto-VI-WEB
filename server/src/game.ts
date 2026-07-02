@@ -55,7 +55,7 @@ export class GameRoom {
       id, name: '', ws, joined: false,
       pos: [0, 0, 0], yaw: 0, anim: 'idle', mode: 'foot', vehId: null,
       hp: PLAYER_MAX_HP, kills: 0, deaths: 0, dead: false, diedAt: 0,
-      ping: 0, lastStateAt: 0, lastShotAt: {}, lastChatAt: 0,
+      ping: 0, lastStateAt: 0, lastShotAt: {}, lastChatAt: 0, posHistory: [],
       spawnProtUntil: 0, heat: 0, wantedLevel: 0, lastHeatAt: 0, prevRow: '',
     };
     this.players.set(id, player);
@@ -163,9 +163,14 @@ export class GameRoom {
   private handleState(player: SPlayer, msg: import('@vice/shared').StateMsg): void {
     if (player.dead) return;
     const now = Date.now();
-    const dt = clamp((now - (player.lastStateAt || now)) / 1000, 0.02, 0.5);
+    // Drop sub-interval floods: legit clients send at 20Hz (50ms). Without
+    // this, N messages in one real tick each earn a fresh dt-worth of allowed
+    // travel, accumulating into a speed/teleport hack that we then broadcast.
+    const elapsed = now - (player.lastStateAt || 0);
+    if (player.lastStateAt && elapsed < 40) return;
+    const dt = clamp(elapsed / 1000, 0.02, 0.5);
     player.lastStateAt = now;
-    if (!Array.isArray(msg.pos) || msg.pos.some((v) => typeof v !== 'number' || !isFinite(v))) return;
+    if (!validVec3(msg.pos)) return;
 
     if (msg.mode === 'drive' && msg.veh && player.vehId === msg.veh.id) {
       const veh = this.vehicles.get(msg.veh.id);
@@ -173,15 +178,18 @@ export class GameRoom {
       const spec = VEHICLES[veh.kind];
       const maxDist = Math.max(spec.topSpeed * SPEED_TOLERANCE * dt, 1) + 0.3;
       const p = msg.veh.pos;
-      if (p.every((v: number) => isFinite(v))) {
-        veh.pos = clampMove(veh.pos, [p[0], groundHeight(p[0], p[2]), p[2]], maxDist);
+      if (validVec3(p)) {
+        const cx = clamp(p[0], WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX);
+        const cz = clamp(p[2], WORLD_BOUNDS.minZ, WORLD_BOUNDS.maxZ);
+        veh.pos = clampMove(veh.pos, [cx, groundHeight(cx, cz), cz], maxDist);
         veh.yaw = sanitizeAngle(msg.veh.yaw, veh.yaw);
-        veh.speed = clamp(msg.veh.speed || 0, -spec.topSpeed, spec.topSpeed);
+        veh.speed = clamp(typeof msg.veh.speed === 'number' && isFinite(msg.veh.speed) ? msg.veh.speed : 0, -spec.topSpeed, spec.topSpeed);
       }
       player.pos = [veh.pos[0], veh.pos[1], veh.pos[2]];
       player.yaw = veh.yaw;
       player.anim = 'idle';
       player.mode = 'drive';
+      this.recordPos(player, now);
     } else if (msg.mode === 'foot' && player.mode === 'foot') {
       // horizontal-only clamp: vertical is already bounded to the ground band
       const maxDist = SPRINT_SPEED * SPEED_TOLERANCE * dt + 0.15;
@@ -193,14 +201,36 @@ export class GameRoom {
       ];
       player.pos = clampMoveHorizontal(player.pos, target, maxDist);
       player.yaw = sanitizeAngle(msg.yaw, player.yaw);
-      player.anim = typeof msg.anim === 'string' ? msg.anim : 'idle';
+      player.anim = validAnim(msg.anim);
+      this.recordPos(player, now);
+    }
+  }
+
+  /** keep ~500ms of positions so combat can validate against where the
+   *  shooter actually saw the target (interp delay + ping), not just now. */
+  private recordPos(player: SPlayer, now: number): void {
+    player.posHistory.push({ t: now, pos: [player.pos[0], player.pos[1], player.pos[2]] });
+    const cutoff = now - 600;
+    while (player.posHistory.length > 1 && player.posHistory[0].t < cutoff) {
+      player.posHistory.shift();
     }
   }
 
   private handleEnter(player: SPlayer, vehId: string): void {
-    if (player.dead || player.mode !== 'foot') return;
+    // reply even when dead/driving so the client clears its pendingEnter latch
+    if (player.dead) {
+      this.send(player, { t: 'enterDenied', vehId, reason: 'dead' });
+      return;
+    }
+    if (player.mode !== 'foot') {
+      this.send(player, { t: 'enterDenied', vehId, reason: 'occupied' });
+      return;
+    }
     const veh = this.vehicles.get(vehId);
-    if (!veh) return;
+    if (!veh) {
+      this.send(player, { t: 'enterDenied', vehId, reason: 'far' });
+      return;
+    }
     if (veh.driverId) {
       this.send(player, { t: 'enterDenied', vehId, reason: 'occupied' });
       return;
@@ -277,6 +307,11 @@ export class GameRoom {
     player.vehId = null;
     player.anim = 'idle';
     player.spawnProtUntil = now + SPAWN_PROTECT_MS;
+    // reset movement-clamp baseline & stale history so the first post-respawn
+    // state message (still reporting the corpse position) can't drag the fresh
+    // spawn back toward the death spot with a huge dt.
+    player.lastStateAt = now;
+    player.posHistory = [];
     this.broadcast({
       t: 'respawned', id: player.id,
       pos: [quantize(player.pos[0]), quantize(player.pos[1]), quantize(player.pos[2])],
@@ -287,6 +322,16 @@ export class GameRoom {
   // ---------------- tick ----------------
 
   private tick(): void {
+    // The loop is shared by everyone — one unexpected throw here would kill
+    // the interval and freeze the whole server. Never let it escape.
+    try {
+      this.tickBody();
+    } catch (err) {
+      console.error('[game] tick error (recovered)', err);
+    }
+  }
+
+  private tickBody(): void {
     this.tickNo++;
     const now = Date.now();
     const dt = TICK_MS / 1000;
@@ -398,6 +443,22 @@ function clampMoveHorizontal(
 
 function sanitizeAngle(v: unknown, fallback: number): number {
   return typeof v === 'number' && isFinite(v) ? v : fallback;
+}
+
+const LIVE_ANIMS = new Set(['idle', 'walk', 'run', 'jump', 'aim']);
+/** reject 'dead' (and junk) from client input — only the server marks death,
+ *  otherwise a spoofed 'dead' anim hides a live player from every hit test. */
+function validAnim(v: unknown): import('@vice/shared').PlayerAnim {
+  return typeof v === 'string' && LIVE_ANIMS.has(v) ? (v as import('@vice/shared').PlayerAnim) : 'idle';
+}
+
+/** strict [x,y,z]: exactly 3 real numbers — global isFinite() coerces
+ *  strings and a length-2 array would leave z undefined -> NaN downstream. */
+function validVec3(v: unknown): v is [number, number, number] {
+  return Array.isArray(v) && v.length === 3
+    && typeof v[0] === 'number' && isFinite(v[0])
+    && typeof v[1] === 'number' && isFinite(v[1])
+    && typeof v[2] === 'number' && isFinite(v[2]);
 }
 
 export function playerInfo(p: SPlayer): PlayerInfo {

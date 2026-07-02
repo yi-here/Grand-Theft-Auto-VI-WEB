@@ -317,6 +317,35 @@ async function main() {
     fail('no police row in snapshots');
   }
 
+  // ---- 8. anti-cheat / robustness (must not crash or corrupt state) ----
+  // respawn B and put it next to A so we can attack it
+  B.send({ t: 'respawn' });
+  await sleep(300);
+  // (a) prototype-pollution weapon key must be rejected, not NaN a victim's HP
+  const bHpBefore = 100;
+  const oo = [A.pos[0], A.pos[1] + 1.6, A.pos[2]];
+  const tt = [B.pos[0], B.pos[1] + 0.9, B.pos[2]];
+  A.send({ t: 'shoot', weapon: '__proto__', origin: oo, dir: [0, 0, 1], hitKind: 'player', hitId: B.id, hitPos: tt });
+  A.send({ t: 'shoot', weapon: 'constructor', origin: oo, dir: [0, 0, 1], hitKind: 'player', hitId: B.id, hitPos: tt });
+  await sleep(400);
+  ok(B.hp === bHpBefore, `prototype-pollution weapon key ignored (B hp still ${B.hp})`);
+
+  // (b) malformed drive state (length-2 pos, string coords) must not poison a vehicle
+  const cleanVeh = A.welcome.vehicles.find((v) => v.id !== nearest.id && v.id !== bCar.id);
+  A.send({ t: 'enterVehicle', vehId: cleanVeh.id });
+  // A is on foot far away so this will likely be denied — that's fine, we just
+  // ensure the server survives garbage. Fire garbage regardless of ownership:
+  A.send({ t: 'state', seq: 0, mode: 'drive', pos: [A.pos[0], 0, A.pos[2]], yaw: 0, anim: 'idle', veh: { id: cleanVeh.id, pos: [1, 2], yaw: 0, speed: 0 } });
+  A.send({ t: 'state', seq: 0, mode: 'drive', pos: [A.pos[0], 0, A.pos[2]], yaw: 0, anim: 'idle', veh: { id: cleanVeh.id, pos: ['x', 'y', 'z'], yaw: 'nope', speed: 'fast' } });
+  await sleep(400);
+  const vrow = B.latestRow('vehicles', cleanVeh.id);
+  const vehFinite = !vrow || (isFinite(vrow[1]) && isFinite(vrow[2]) && isFinite(vrow[3]));
+  ok(vehFinite, 'malformed drive state did not corrupt the vehicle to NaN');
+
+  // (c) server still alive and ticking after all that garbage
+  const stillTicking = await A.waitFor((m) => m.t === 'snapshot', 2000, 'server still broadcasting snapshots');
+  ok(!!stillTicking, 'server survived hostile input and keeps ticking');
+
   log('all gameplay checks done');
 }
 

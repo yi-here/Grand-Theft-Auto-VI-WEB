@@ -74,6 +74,13 @@ export class ThirdPersonCamera {
       look.add(right.multiplyScalar(0.55));
       this.camera.position.add(right.clone().multiplyScalar(0.55));
     }
+    // keep the camera out of building interiors (the shoulder offset above,
+    // and shake, can push it through a wall — occlusion only checked the boom)
+    const pushed = this.buildingGrid.resolveCircle(
+      this.camera.position.x, this.camera.position.z, 0.3, 2,
+    );
+    this.camera.position.x = pushed.x;
+    this.camera.position.z = pushed.z;
     this.camera.lookAt(look);
 
     const wantFov = 62 + clamp(opts.speed / 42, 0, 1) * (opts.driving ? 14 : 0) - (opts.aiming ? 14 : 0);

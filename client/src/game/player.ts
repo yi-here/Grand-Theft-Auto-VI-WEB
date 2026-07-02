@@ -26,14 +26,21 @@ export class LocalPlayer {
   grounded = true;
   hp = 100;
   dead = false;
+  jumpBuffer = 0;
 
   constructor(private moveGrid: SpatialGrid) {}
+
+  /** latch a jump; consumed by the next grounded step within ~150ms */
+  queueJump(): void {
+    this.jumpBuffer = 0.15;
+  }
 
   spawnAt(x: number, y: number, z: number): void {
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);
     this.dead = false;
     this.hp = 100;
+    this.jumpBuffer = 0;
   }
 
   update(dt: number, input: Input, camYaw: number, aiming: boolean, vehicles: VehicleObstacle[]): void {
@@ -71,11 +78,15 @@ export class LocalPlayer {
     this.vel.x += (dx * speed - this.vel.x) * Math.min(1, accel * dt / 4);
     this.vel.z += (dz * speed - this.vel.z) * Math.min(1, accel * dt / 4);
 
-    // jumping + gravity
+    // jumping + gravity. Jump is edge-buffered by the caller (queueJump) so a
+    // quick tap between two render frames isn't lost; it fires on the next
+    // grounded physics step within the buffer window.
     const ground = groundHeight(this.pos.x, this.pos.z);
-    if (this.grounded && input.isDown('Space')) {
+    if (this.jumpBuffer > 0) this.jumpBuffer -= dt;
+    if (this.grounded && this.jumpBuffer > 0) {
       this.vel.y = JUMP_VELOCITY;
       this.grounded = false;
+      this.jumpBuffer = 0;
     }
     this.vel.y -= GRAVITY * dt;
 
@@ -113,6 +124,14 @@ export class LocalPlayer {
         this.pos.x = v.x + hit.x * c2 + hit.z * s2;
         this.pos.z = v.z - hit.x * s2 + hit.z * c2;
       }
+    }
+
+    // a vehicle push can leave the player inside a building; buildings are the
+    // hard constraint, so resolve statics once more to win the tie.
+    if (vehicles.length) {
+      const res2 = this.moveGrid.resolveCircle(this.pos.x, this.pos.z, PLAYER_RADIUS);
+      this.pos.x = res2.x;
+      this.pos.z = res2.z;
     }
 
     this.pos.x = clamp(this.pos.x, WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX);

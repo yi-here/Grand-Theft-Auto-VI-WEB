@@ -29,6 +29,7 @@ export class Combat {
   weapon: WeaponKind = 'pistol';
   clip: Record<string, number> = { pistol: WEAPONS.pistol.clip, smg: WEAPONS.smg.clip };
   reloadingUntil = 0;
+  private reloadWeapon: WeaponKind | null = null;
   private lastShot = 0;
   punchT = 0;
 
@@ -86,16 +87,22 @@ export class Combat {
     if (this.weapon !== w) {
       this.weapon = w;
       this.reloadingUntil = 0;
+      this.reloadWeapon = null; // cancel any in-flight reload of the old weapon
     }
   }
 
   private startReload(): void {
     const spec = WEAPONS[this.weapon];
     if (spec.clip === 0 || this.reloading || this.clip[this.weapon] === spec.clip) return;
+    const weapon = this.weapon; // capture: the held weapon may change before the timer fires
     this.reloadingUntil = performance.now() + spec.reloadMs;
+    this.reloadWeapon = weapon;
     setTimeout(() => {
-      if (performance.now() >= this.reloadingUntil - 20) {
-        this.clip[this.weapon] = spec.clip;
+      // only complete if we're still reloading THIS weapon (a weapon switch
+      // cancels the reload rather than refilling whatever is now held)
+      if (this.reloadWeapon === weapon) {
+        this.clip[weapon] = spec.clip;
+        this.reloadWeapon = null;
       }
     }, spec.reloadMs);
   }
@@ -107,19 +114,22 @@ export class Combat {
   ): void {
     this.clip[this.weapon]--;
 
-    // spread
+    // Aim ray originates at the player's EYE (not the camera). The camera
+    // sits behind/beside the player; casting from there let shots register
+    // on targets between camera and player, and let the ray start inside a
+    // wall when the shoulder-aim camera was embedded. Eye-origin matches the
+    // origin the server validates against.
+    const eye = new THREE.Vector3(playerPos.x, playerPos.y + PLAYER_EYE, playerPos.z);
     const dir = aim.dir.clone();
     if (spec.spreadRad > 0) {
       dir.x += (Math.random() - 0.5) * 2 * spec.spreadRad;
       dir.y += (Math.random() - 0.5) * 2 * spec.spreadRad;
       dir.z += (Math.random() - 0.5) * 2 * spec.spreadRad;
-      dir.normalize();
     }
+    dir.normalize();
 
-    const maxT = spec.range + 8; // camera sits behind the player
-    const bHit = this.buildingGrid.raycast(
-      aim.origin.x, aim.origin.y, aim.origin.z, dir.x, dir.y, dir.z, maxT,
-    );
+    const maxT = spec.range;
+    const bHit = this.buildingGrid.raycast(eye.x, eye.y, eye.z, dir.x, dir.y, dir.z, maxT);
     const hit: { t: number; kind: 'player' | 'npc' | 'world' | 'none'; id?: string } = {
       t: bHit ?? maxT,
       kind: bHit !== null ? 'world' : 'none',
@@ -130,8 +140,8 @@ export class Combat {
     const testBody = (pos: THREE.Vector3, id: string, kind: 'player' | 'npc'): void => {
       torso.set(pos.x, pos.y + 1.0, pos.z);
       head.set(pos.x, pos.y + 1.55, pos.z);
-      const t1 = raySphere(aim.origin, dir, torso, 0.55);
-      const t2 = raySphere(aim.origin, dir, head, 0.3);
+      const t1 = raySphere(eye, dir, torso, 0.55);
+      const t2 = raySphere(eye, dir, head, 0.3);
       const t = t1 !== null && t2 !== null ? Math.min(t1, t2) : t1 ?? t2;
       if (t !== null && t < hit.t) {
         hit.t = t;
@@ -149,19 +159,8 @@ export class Combat {
       testBody(npc.group.position, id, 'npc');
     }
 
-    const hitPos = aim.origin.clone().add(dir.clone().multiplyScalar(hit.t));
-    const eye = new THREE.Vector3(playerPos.x, playerPos.y + PLAYER_EYE, playerPos.z);
-    const sendDir = hitPos.clone().sub(eye);
-    const sendDist = sendDir.length();
-    if (sendDist > spec.range) {
-      // out of range from the muzzle even if the camera ray reached — trim
-      hit.kind = 'none';
-      hit.id = undefined;
-      hitPos.copy(eye).add(sendDir.multiplyScalar(spec.range / sendDist));
-      sendDir.normalize();
-    } else {
-      sendDir.normalize();
-    }
+    const hitPos = eye.clone().add(dir.clone().multiplyScalar(hit.t));
+    const sendDir = dir;
 
     // effects
     const muzzle = eye.clone().add(sendDir.clone().multiplyScalar(0.5));

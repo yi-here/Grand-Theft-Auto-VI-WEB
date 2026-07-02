@@ -21,6 +21,7 @@ export class Scoreboard {
 
   setEntries(entries: ScoreEntry[]): void {
     this.entries = [...entries].sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+    if (this.root.style.display !== 'none') this.render(); // live-refresh while held open
   }
 
   setVisible(v: boolean): void {

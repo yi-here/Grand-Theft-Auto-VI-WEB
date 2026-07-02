@@ -11,8 +11,11 @@ import type { SPlayer } from './types.js';
 
 export function handleShoot(room: GameRoom, player: SPlayer, msg: ShootMsg): void {
   if (player.dead || player.mode !== 'foot') return;
+  // own-property check: a key like "constructor"/"__proto__" resolves to an
+  // Object.prototype member and would slip past a plain truthiness test,
+  // leaving every spec field undefined (NaN damage, no cooldown, no range).
+  if (typeof msg.weapon !== 'string' || !Object.prototype.hasOwnProperty.call(WEAPONS, msg.weapon)) return;
   const spec = WEAPONS[msg.weapon];
-  if (!spec) return;
   const now = Date.now();
   const last = player.lastShotAt[msg.weapon] ?? 0;
   if (now - last < spec.cooldownMs * 0.8) return;
@@ -34,10 +37,11 @@ export function handleShoot(room: GameRoom, player: SPlayer, msg: ShootMsg): voi
     if (msg.weapon === 'fist') {
       if (dist2D(player.pos[0], player.pos[2], target.pos[0], target.pos[2]) > spec.range + 0.8) return;
     } else {
-      // claimed hit point must be near the target we know about
-      const center: [number, number, number] = [target.pos[0], target.pos[1] + 0.9, target.pos[2]];
-      if (dist3D(msg.hitPos, center) > 3.0) return;
-      if (!aimConeOk(msg.origin, msg.dir, center, hitDist)) return;
+      // Lag compensation: the shooter aimed at where the target was ~one
+      // interp-delay + ping ago. Accept the hit if the claimed point is near
+      // the target NOW or at any position in the last ~500ms.
+      if (!nearRecentPosition(target, msg.hitPos, 3.0)) return;
+      if (!aimConeOk(msg.origin, msg.dir, [target.pos[0], target.pos[1] + 0.9, target.pos[2]], hitDist)) return;
       if (blockedByBuilding(room, msg.origin, msg.hitPos, hitDist)) return;
     }
     if (target.spawnProtUntil > now) return;
@@ -136,6 +140,18 @@ export function pickSpawn(room: GameRoom, forPlayer: SPlayer | null): [number, n
 
 function validVec(v: unknown): v is [number, number, number] {
   return Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number' && isFinite(n));
+}
+
+/** true if hitPos is within tol of the target's body center now, or at any
+ *  recorded position in its ~500ms history (cheap lag compensation). */
+function nearRecentPosition(target: SPlayer, hitPos: [number, number, number], tol: number): boolean {
+  const check = (px: number, py: number, pz: number): boolean =>
+    dist3D(hitPos, [px, py + 0.9, pz]) <= tol;
+  if (check(target.pos[0], target.pos[1], target.pos[2])) return true;
+  for (const h of target.posHistory) {
+    if (check(h.pos[0], h.pos[1], h.pos[2])) return true;
+  }
+  return false;
 }
 
 function aimConeOk(

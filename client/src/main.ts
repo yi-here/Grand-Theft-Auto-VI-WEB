@@ -88,7 +88,15 @@ let chat: Chat;
 let scoreboard: Scoreboard;
 let buildingGrid: SpatialGrid;
 
+let started = false;
 const menu = new Menu(uiRoot, (name) => {
+  // A dropped session leaves a fully-built scene, Net handlers and DOM behind;
+  // rebuilding on top would duplicate the world and stack handlers. Rejoining
+  // after a disconnect requires a fresh page.
+  if (started) {
+    location.reload();
+    return;
+  }
   audio.init();
   net
     .connect(name)
@@ -153,6 +161,7 @@ function startGame(welcome: WelcomeMsg): void {
   hud.show();
   hud.setHealth(myHp);
   playing = true;
+  started = true;
   input.requestLock();
 }
 
@@ -208,6 +217,7 @@ function wireNetHandlers(): void {
       deadUntil = performance.now() + RESPAWN_DELAY_MS;
       myMode = 'foot';
       vehicles.drivingId = null;
+      pendingEnter = null; // don't leave the enter-latch stuck if we died mid-request
       hud.showDeath(killer);
       hud.setWanted(0);
       wantedLevel = 0;
@@ -278,8 +288,9 @@ function wireNetHandlers(): void {
 
   net.onDisconnect = () => {
     playing = false;
+    if (input.pointerLocked) document.exitPointerLock();
     menu.show();
-    menu.showError('disconnected from server — refresh to rejoin');
+    menu.showError('disconnected from server — click to reload & rejoin');
   };
 }
 
@@ -326,6 +337,10 @@ function frame(): void {
         }
       }
     }
+
+    // edge-buffer the jump once per render frame so a tap between frames
+    // isn't lost when the physics substep loop polls the live key state
+    if (myMode === 'foot' && input.wasPressed('Space')) localPlayer.queueJump();
 
     // fixed-timestep physics: sim speed stays correct even at low fps
     physAccum += dt;
