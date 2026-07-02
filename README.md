@@ -6,8 +6,8 @@ Everything is original and procedural: **zero art assets**. Geometry is built fr
 
 | | |
 |---|---|
-| ![day](docs/gameplay-day.png) | ![driving](docs/gameplay-driving.png) |
-| ![night](docs/gameplay-night.png) | |
+| ![driving at dawn](docs/showcase-drive.png) | ![dusk skyline](docs/showcase-dusk.png) |
+| ![on foot, day](docs/gameplay-day.png) | ![neon night](docs/gameplay-night.png) |
 
 ## Play
 
@@ -45,8 +45,10 @@ Open **http://localhost:8080** in several browser tabs (or send the URL to frien
 ```bash
 npm run dev        # server on :8080 + Vite dev client on :5173 (proxied /ws)
 npm run check      # typecheck all workspaces
-npm run smoke      # end-to-end: 2 headless browsers join, walk, drive, screenshot
-node scripts/bot-test.mjs   # protocol bots: car theft, combat, respawn, anti-cheat, police
+npm test           # unit + protocol-bot + browser smoke, in sequence
+npm run test:unit  # pure-logic: raycast/collision math, city determinism
+npm run test:bot   # protocol bots: car theft, combat, respawn, anti-cheat, police
+npm run smoke      # 2 headless browsers join, walk, drive, verify day-night, screenshot
 ```
 
 ### Architecture

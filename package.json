@@ -18,6 +18,9 @@
     "build:server": "esbuild server/src/index.ts --bundle --platform=node --format=esm --external:ws --outfile=server/dist/index.js",
     "build:client": "vite build client",
     "start": "node server/dist/index.js",
+    "test": "npm run test:unit && npm run test:bot && npm run smoke",
+    "test:unit": "tsx scripts/unit-test.mjs",
+    "test:bot": "node scripts/bot-test.mjs",
     "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
