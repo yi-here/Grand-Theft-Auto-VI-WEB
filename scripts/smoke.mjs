@@ -69,11 +69,16 @@ async function main() {
       '--enable-unsafe-swiftshader',
       '--use-angle=swiftshader',
       '--disable-gpu-sandbox',
+      // never throttle rAF in occluded pages — both players must simulate at full rate
+      '--disable-renderer-backgrounding',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
     ],
   });
 
   const pageA = await newPlayer('SmokeA');
   const pageB = await newPlayer('SmokeB');
+  await pageA.bringToFront();
 
   // --- cross visibility ---
   await waitForFn(pageA, 'window.__game && window.__game.remotePlayerIds().length >= 1', 15000,
@@ -120,6 +125,53 @@ async function main() {
 
   await pageA.screenshot({ path: path.join(ART_DIR, 'playerA.png') });
   await pageB.screenshot({ path: path.join(ART_DIR, 'playerB.png') });
+
+  // --- vehicle: A walks to the nearest car, enters, drives ---
+  let arrived = false;
+  await pageA.keyboard.down('w');
+  for (let i = 0; i < 450; i++) {
+    const state = await pageA.evaluate(
+      '(() => { const p = window.__game.pos(); const v = window.__game.nearestVehicle(); return { p, v }; })()',
+    );
+    if (!state.v) break;
+    if (state.v.dist < 2.6) { arrived = true; break; }
+    const yaw = Math.atan2(state.v.x - state.p[0], state.v.z - state.p[2]);
+    await pageA.evaluate(`window.__game.setCamYaw(${yaw})`);
+    await pageA.waitForTimeout(100);
+  }
+  await pageA.keyboard.up('w');
+  if (!arrived) {
+    fail('A could not reach a vehicle on foot');
+  } else {
+    await pageA.keyboard.press('e');
+    const driving = await waitForFn(pageA, 'window.__game.mode() === "drive"', 5000, 'A seated in vehicle');
+    if (driving) {
+      log('A entered a vehicle');
+      const posStart = await pageA.evaluate('window.__game.pos()');
+      await pageA.keyboard.down('w');
+      await pageA.waitForTimeout(2500);
+      const speed = await pageA.evaluate('window.__game.speed()');
+      await pageA.screenshot({ path: path.join(ART_DIR, 'driving.png') });
+      await pageA.keyboard.up('w');
+      const posEnd = await pageA.evaluate('window.__game.pos()');
+      const drove = Math.hypot(posEnd[0] - posStart[0], posEnd[2] - posStart[2]);
+      if (drove < 8 || speed < 4) fail(`vehicle barely moved (${drove.toFixed(1)}m, ${speed.toFixed(1)} m/s)`);
+      else log(`driving OK (${drove.toFixed(0)}m at up to ${speed.toFixed(0)} m/s)`);
+      // B should see that vehicle moving too
+      const vehId = await pageA.evaluate('window.__game.nearestVehicle()?.id ?? null');
+      log(`A driving near vehicle ${vehId}`);
+    }
+  }
+
+  // --- neon night render ---
+  await pageB.evaluate('window.__game.setDayPhase(0.75)');
+  await pageB.waitForTimeout(600);
+  const nightSamples = await pageB.evaluate('window.__game.sampleCanvas()');
+  const nightBrightness = nightSamples.reduce((acc, s) => acc + s[0] + s[1] + s[2], 0) / nightSamples.length;
+  if (nightBrightness > brightness) fail(`night not darker than day (${nightBrightness.toFixed(0)} vs ${brightness.toFixed(0)})`);
+  else log(`day-night cycle OK (day ${brightness.toFixed(0)} -> night ${nightBrightness.toFixed(0)})`);
+  await pageB.screenshot({ path: path.join(ART_DIR, 'night.png') });
+
   log(`screenshots in ${ART_DIR}`);
 }
 

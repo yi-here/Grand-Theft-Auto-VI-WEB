@@ -68,6 +68,8 @@ let pendingEnter: string | null = null;
 let wantedLevel = 0;
 let seq = 0;
 let sendAccum = 0;
+let lastSpeed = 0;
+let debugDayPhase: number | null = null;
 const names = new Map<string, string>();
 
 let world: World;
@@ -283,21 +285,25 @@ function wireNetHandlers(): void {
 
 // ---------------------------------------------------------------- loop
 let lastT = performance.now();
+let physAccum = 0;
+const PHYS_STEP = 1 / 60;
 
 function frame(): void {
   requestAnimationFrame(frame);
   const now = performance.now();
-  const dt = Math.min((now - lastT) / 1000, 0.05);
+  const dt = Math.min((now - lastT) / 1000, 0.25);
   lastT = now;
 
   if (playing) {
     const renderTime = net.serverNow() - INTERP_DELAY_MS;
     const aiming = input.aimHeld && myMode === 'foot' && !dead;
     const drivenV = vehicles.drivingId ? vehicles.get(vehicles.drivingId) : null;
-    let speed = 0;
+    let speed = drivenV ? drivenV.drive.speed : 0;
 
+    // gather nearby obstacles once per frame
+    const obstacles: VehicleObstacle[] = [];
+    const others: { x: number; z: number; r: number }[] = [];
     if (myMode === 'foot') {
-      const obstacles: VehicleObstacle[] = [];
       for (const v of vehicles.vehicles.values()) {
         if (Math.abs(v.pos.x - localPlayer.pos.x) < 12 && Math.abs(v.pos.z - localPlayer.pos.z) < 12) {
           obstacles.push({
@@ -306,17 +312,7 @@ function frame(): void {
           });
         }
       }
-      localPlayer.update(dt, input, camCtrl.yaw, aiming, obstacles);
-
-      if (input.wasPressed('KeyE') && !dead && !pendingEnter) {
-        const target = vehicles.nearestEnterable(localPlayer.pos, VEHICLE_ENTER_DIST);
-        if (target) {
-          pendingEnter = target.info.id;
-          net.send({ t: 'enterVehicle', vehId: target.info.id });
-        }
-      }
     } else if (drivenV) {
-      const others: { x: number; z: number; r: number }[] = [];
       for (const v of vehicles.vehicles.values()) {
         if (v === drivenV) continue;
         if (Math.abs(v.pos.x - drivenV.pos.x) < 20 && Math.abs(v.pos.z - drivenV.pos.z) < 20) {
@@ -329,10 +325,33 @@ function frame(): void {
           others.push({ x: n.group.position.x, z: n.group.position.z, r: 1.4 });
         }
       }
-      speed = dead ? 0 : vehicles.updateLocal(dt, input, others);
+    }
+
+    // fixed-timestep physics: sim speed stays correct even at low fps
+    physAccum += dt;
+    let steps = 0;
+    while (physAccum >= PHYS_STEP && steps < 15) {
+      if (myMode === 'foot') {
+        localPlayer.update(PHYS_STEP, input, camCtrl.yaw, aiming, obstacles);
+      } else if (drivenV && !dead) {
+        speed = vehicles.updateLocal(PHYS_STEP, input, others);
+      }
+      physAccum -= PHYS_STEP;
+      steps++;
+    }
+    if (physAccum >= PHYS_STEP) physAccum = 0; // dropped time on very slow frames
+
+    if (myMode === 'foot') {
+      if (input.wasPressed('KeyE') && !dead && !pendingEnter) {
+        const target = vehicles.nearestEnterable(localPlayer.pos, VEHICLE_ENTER_DIST);
+        if (target) {
+          pendingEnter = target.info.id;
+          net.send({ t: 'enterVehicle', vehId: target.info.id });
+        }
+      }
+    } else if (drivenV) {
       localPlayer.pos.set(drivenV.pos.x, drivenV.pos.y, drivenV.pos.z);
       localPlayer.yaw = drivenV.yaw;
-
       if (input.wasPressed('KeyE') && Math.abs(speed) < 12) {
         net.send({ t: 'exitVehicle' });
       }
@@ -360,9 +379,10 @@ function frame(): void {
 
     // world/sky
     world.update(dt);
-    sky.update(net.serverNow(), camera.position);
+    sky.update(net.serverNow(), camera.position, debugDayPhase);
     world.setNight(sky.nightAmount);
     effects.update(dt);
+    lastSpeed = Math.abs(speed);
 
     // local avatar
     localAvatar.group.visible = myMode === 'foot';
@@ -436,7 +456,7 @@ function updatePrompt(drivenV: ReturnType<VehicleManager['get']> | null): void {
     return;
   }
   if (drivenV) {
-    hud.setPrompt(Math.abs(drivenV.drive.speed) < 12 ? '' : '');
+    hud.setPrompt(Math.abs(drivenV.drive.speed) < 12 ? 'E — exit vehicle' : '');
     return;
   }
   const target = vehicles.nearestEnterable(localPlayer.pos, VEHICLE_ENTER_DIST);
@@ -539,6 +559,19 @@ function exposeDebugHooks(): void {
     drawCalls: () => renderer.info.render.calls,
     hp: () => myHp,
     mode: () => myMode,
+    speed: () => lastSpeed,
+    setCamYaw: (yaw: number) => { if (camCtrl) camCtrl.yaw = yaw; },
+    setDayPhase: (p: number | null) => { debugDayPhase = p; },
+    nearestVehicle: () => {
+      if (!vehicles || !localPlayer) return null;
+      let best: { id: string; x: number; z: number; dist: number } | null = null;
+      for (const v of vehicles.vehicles.values()) {
+        if (v.driverId) continue;
+        const dist = Math.hypot(v.pos.x - localPlayer.pos.x, v.pos.z - localPlayer.pos.z);
+        if (!best || dist < best.dist) best = { id: v.info.id, x: v.pos.x, z: v.pos.z, dist };
+      }
+      return best;
+    },
     sampleCanvas: () => {
       const gl = renderer.getContext();
       const w = gl.drawingBufferWidth;

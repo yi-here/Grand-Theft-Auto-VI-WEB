@@ -40,9 +40,9 @@ export class SkySystem {
     scene.add(this.sunSprite);
   }
 
-  /** serverNow in ms */
-  update(serverNow: number, camPos: THREE.Vector3): void {
-    const t = (serverNow / 1000 / DAY_CYCLE_SECONDS) % 1; // 0..1, 0 = dawn
+  /** serverNow in ms; phaseOverride (0..1) pins time-of-day for testing */
+  update(serverNow: number, camPos: THREE.Vector3, phaseOverride: number | null = null): void {
+    const t = phaseOverride ?? (serverNow / 1000 / DAY_CYCLE_SECONDS) % 1; // 0..1, 0 = dawn
     const sunEl = Math.sin(t * Math.PI * 2); // >0 day, <0 night
     const day = THREE.MathUtils.clamp(sunEl * 2.2, -1, 1);
 

@@ -171,7 +171,7 @@ export class GameRoom {
       const veh = this.vehicles.get(msg.veh.id);
       if (!veh || veh.driverId !== player.id) return;
       const spec = VEHICLES[veh.kind];
-      const maxDist = Math.max(spec.topSpeed * SPEED_TOLERANCE * dt, 1) + MAX_TELEPORT * 0.2;
+      const maxDist = Math.max(spec.topSpeed * SPEED_TOLERANCE * dt, 1) + 0.3;
       const p = msg.veh.pos;
       if (p.every((v: number) => isFinite(v))) {
         veh.pos = clampMove(veh.pos, [p[0], groundHeight(p[0], p[2]), p[2]], maxDist);
@@ -183,14 +183,15 @@ export class GameRoom {
       player.anim = 'idle';
       player.mode = 'drive';
     } else if (msg.mode === 'foot' && player.mode === 'foot') {
-      const maxDist = SPRINT_SPEED * SPEED_TOLERANCE * dt + 0.5;
+      // horizontal-only clamp: vertical is already bounded to the ground band
+      const maxDist = SPRINT_SPEED * SPEED_TOLERANCE * dt + 0.15;
       const ground = groundHeight(msg.pos[0], msg.pos[2]);
       const target: [number, number, number] = [
         clamp(msg.pos[0], WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX),
         clamp(msg.pos[1], ground - 0.5, ground + 12),
         clamp(msg.pos[2], WORLD_BOUNDS.minZ, WORLD_BOUNDS.maxZ),
       ];
-      player.pos = clampMove(player.pos, target, maxDist);
+      player.pos = clampMoveHorizontal(player.pos, target, maxDist);
       player.yaw = sanitizeAngle(msg.yaw, player.yaw);
       player.anim = typeof msg.anim === 'string' ? msg.anim : 'idle';
     }
@@ -379,6 +380,20 @@ function clampMove(
   if (d <= maxDist || d < 1e-6) return to;
   const s = maxDist / d;
   return [from[0] + dx * s, from[1] + dy * s, from[2] + dz * s];
+}
+
+/** clamp XZ displacement only; Y passes through (bounded by the caller) */
+function clampMoveHorizontal(
+  from: [number, number, number],
+  to: [number, number, number],
+  maxDist: number,
+): [number, number, number] {
+  const dx = to[0] - from[0];
+  const dz = to[2] - from[2];
+  const d = Math.sqrt(dx * dx + dz * dz);
+  if (d <= maxDist || d < 1e-6) return to;
+  const s = maxDist / d;
+  return [from[0] + dx * s, to[1], from[2] + dz * s];
 }
 
 function sanitizeAngle(v: unknown, fallback: number): number {
