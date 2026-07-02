@@ -1,0 +1,31 @@
+{
+  "name": "vice-coast",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Vice Coast — a GTA-inspired multiplayer open-world game for the browser",
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "tsx watch server/src/index.ts",
+    "dev:client": "vite client",
+    "check": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "esbuild server/src/index.ts --bundle --platform=node --format=esm --external:ws --outfile=server/dist/index.js",
+    "build:client": "vite build client",
+    "start": "node server/dist/index.js",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "esbuild": "^0.24.2",
+    "playwright-core": "^1.49.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

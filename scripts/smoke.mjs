@@ -1,0 +1,172 @@
+#!/usr/bin/env node
+// End-to-end smoke test: builds (if needed), boots the production server,
+// opens TWO headless Chromium pages, joins both, and asserts:
+//   - both clients connect and see each other's player entity
+//   - movement on page A propagates to page B
+//   - the scene actually renders (canvas pixel variance)
+//   - draw calls stay under budget
+// Exits non-zero on any failure. Screenshots land in smoke-artifacts/.
+
+import { spawn, execSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright-core';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PORT = process.env.SMOKE_PORT || 8091;
+const BASE = `http://localhost:${PORT}`;
+const ART_DIR = process.env.SMOKE_ARTIFACTS || path.join(root, 'smoke-artifacts');
+const CHROMIUM = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium';
+
+let server = null;
+let browser = null;
+let failed = false;
+
+const log = (msg) => console.log(`[smoke] ${msg}`);
+const fail = (msg) => {
+  console.error(`[smoke] FAIL: ${msg}`);
+  failed = true;
+};
+
+async function main() {
+  fs.mkdirSync(ART_DIR, { recursive: true });
+
+  // determinism guard: no Math.random in shared/
+  const grep = execSync(
+    `grep -rn "Math.random()" ${path.join(root, 'shared', 'src')} || true`,
+    { encoding: 'utf8' },
+  ).trim();
+  if (grep) {
+    fail(`Math.random found in shared/ (breaks determinism):\n${grep}`);
+    process.exit(1);
+  }
+  log('determinism guard passed (no Math.random in shared/)');
+
+  if (!fs.existsSync(path.join(root, 'client', 'dist', 'index.html')) ||
+      !fs.existsSync(path.join(root, 'server', 'dist', 'index.js'))) {
+    log('building…');
+    execSync('npm run build', { cwd: root, stdio: 'inherit' });
+  }
+
+  log(`starting server on :${PORT}`);
+  server = spawn('node', ['server/dist/index.js'], {
+    cwd: root,
+    env: { ...process.env, PORT: String(PORT) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  server.stdout.on('data', (d) => process.stdout.write(`[server] ${d}`));
+  server.stderr.on('data', (d) => process.stderr.write(`[server:err] ${d}`));
+
+  await waitFor(async () => (await fetch(BASE)).ok, 15000, 'server HTTP up');
+
+  log('launching headless chromium (SwiftShader WebGL)');
+  browser = await chromium.launch({
+    executablePath: fs.existsSync(CHROMIUM) ? CHROMIUM : undefined,
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--enable-unsafe-swiftshader',
+      '--use-angle=swiftshader',
+      '--disable-gpu-sandbox',
+    ],
+  });
+
+  const pageA = await newPlayer('SmokeA');
+  const pageB = await newPlayer('SmokeB');
+
+  // --- cross visibility ---
+  await waitForFn(pageA, 'window.__game && window.__game.remotePlayerIds().length >= 1', 15000,
+    'page A sees a remote player');
+  await waitForFn(pageB, 'window.__game && window.__game.remotePlayerIds().length >= 1', 15000,
+    'page B sees a remote player');
+  const idA = await pageA.evaluate('window.__game.myId()');
+  const remoteOfB = await pageB.evaluate('window.__game.remotePlayerIds()');
+  if (!remoteOfB.includes(idA)) {
+    fail(`page B remote list ${JSON.stringify(remoteOfB)} does not include page A id ${idA}`);
+  } else {
+    log(`cross visibility OK (A=${idA} visible on B)`);
+  }
+
+  // --- movement propagation: A runs forward, B should see A move ---
+  const posBefore = await pageB.evaluate(`window.__game.remotePos(${JSON.stringify(idA)})`);
+  await pageA.keyboard.down('w');
+  await pageA.waitForTimeout(2000);
+  await pageA.keyboard.up('w');
+  await pageA.waitForTimeout(400);
+  const posAfter = await pageB.evaluate(`window.__game.remotePos(${JSON.stringify(idA)})`);
+  if (!posBefore || !posAfter) {
+    fail('could not read remote position of A on page B');
+  } else {
+    const dist = Math.hypot(posAfter[0] - posBefore[0], posAfter[2] - posBefore[2]);
+    if (dist < 1.5) fail(`A moved only ${dist.toFixed(2)}m as seen by B (expected > 1.5m)`);
+    else log(`movement propagation OK (A moved ${dist.toFixed(1)}m as seen from B)`);
+  }
+
+  // --- render sanity: canvas is not blank ---
+  const samples = await pageA.evaluate('window.__game.sampleCanvas()');
+  const distinct = new Set(samples.map((s) => s.join(','))).size;
+  const brightness = samples.reduce((acc, s) => acc + s[0] + s[1] + s[2], 0) / samples.length;
+  if (distinct < 6 || brightness < 5) {
+    fail(`canvas looks blank (distinct=${distinct}, brightness=${brightness.toFixed(1)})`);
+  } else {
+    log(`render sanity OK (${distinct} distinct colors sampled, brightness ${brightness.toFixed(0)})`);
+  }
+
+  // --- perf guard: draw calls ---
+  const calls = await pageA.evaluate('window.__game.drawCalls()');
+  if (calls > 350) fail(`draw calls too high: ${calls}`);
+  else log(`draw calls OK (${calls})`);
+
+  await pageA.screenshot({ path: path.join(ART_DIR, 'playerA.png') });
+  await pageB.screenshot({ path: path.join(ART_DIR, 'playerB.png') });
+  log(`screenshots in ${ART_DIR}`);
+}
+
+async function newPlayer(name) {
+  const page = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+  page.on('pageerror', (err) => fail(`${name} page error: ${err.message}`));
+  page.on('crash', () => fail(`${name} page CRASHED`));
+  page.on('load', () => log(`${name} page load event`));
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') console.error(`[${name}:console] ${msg.text()}`);
+  });
+  await page.goto(`${BASE}/?debug=1`, { waitUntil: 'domcontentloaded' });
+  await page.fill('#name-input', name);
+  await page.click('#join-btn');
+  await waitForFn(page, 'window.__game && window.__game.connected()', 15000, `${name} connected`);
+  log(`${name} joined`);
+  return page;
+}
+
+async function waitForFn(page, fn, timeout, label) {
+  try {
+    await page.waitForFunction(fn, undefined, { timeout });
+    return true;
+  } catch {
+    fail(`timeout waiting for: ${label}`);
+    return false;
+  }
+}
+
+async function waitFor(cond, timeout, label) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      if (await cond()) return;
+    } catch { /* retry */ }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`timeout: ${label}`);
+}
+
+main()
+  .catch((err) => {
+    fail(err.stack || String(err));
+  })
+  .finally(async () => {
+    if (browser) await browser.close().catch(() => {});
+    if (server) server.kill('SIGKILL');
+    console.log(failed ? '[smoke] ❌ FAILED' : '[smoke] ✅ PASSED');
+    process.exit(failed ? 1 : 0);
+  });
