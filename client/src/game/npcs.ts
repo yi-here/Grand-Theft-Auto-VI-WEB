@@ -81,15 +81,15 @@ export class NpcManager {
         if (npc.state !== 'dead') npc.group.rotation.y = s.yaw;
       }
 
-      // distance culling
+      // distance culling gates RENDERING only; the pose still updates so a
+      // ped that died/respawned off-screen is in the right pose on approach
       const d2 = (npc.group.position.x - camPos.x) ** 2 + (npc.group.position.z - camPos.z) ** 2;
       npc.group.visible = d2 < HIDE_DIST * HIDE_DIST;
-      if (!npc.group.visible) continue;
 
       if (npc.avatar) {
         const anim = npc.state === 'dead' ? 'dead' : npc.state === 'walk' ? 'walk' : 'idle';
         animateAvatar(npc.avatar, anim, npc.speedEst, dt);
-      } else {
+      } else if (npc.group.visible) {
         for (const w of npc.wheels) w.rotation.x += (npc.speedEst / 0.34) * dt;
         if (npc.lightbar.length === 2) {
           const phase = Math.floor(performance.now() / 220) % 2;

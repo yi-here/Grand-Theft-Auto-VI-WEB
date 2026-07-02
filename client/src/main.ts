@@ -69,6 +69,8 @@ let wantedLevel = 0;
 let seq = 0;
 let sendAccum = 0;
 let lastSpeed = 0;
+let exitRequestedUntil = 0;
+let lastExitSend = 0;
 let debugDayPhase: number | null = null;
 const names = new Map<string, string>();
 
@@ -367,9 +369,18 @@ function frame(): void {
     } else if (drivenV) {
       localPlayer.pos.set(drivenV.pos.x, drivenV.pos.y, drivenV.pos.z);
       localPlayer.yaw = drivenV.yaw;
-      if (input.wasPressed('KeyE') && Math.abs(speed) < 12) {
-        net.send({ t: 'exitVehicle' });
+      // Request exit, and keep retrying while slow: right after a crash the
+      // client speed is 0 but the server still holds the pre-crash value for
+      // ~a tick, so a single request can be silently rejected.
+      if (input.wasPressed('KeyE') && Math.abs(speed) < 12) exitRequestedUntil = now + 700;
+      if (exitRequestedUntil > now && Math.abs(speed) < 12) {
+        if (now - lastExitSend > 120) {
+          lastExitSend = now;
+          net.send({ t: 'exitVehicle' });
+        }
       }
+    } else {
+      exitRequestedUntil = 0;
     }
 
     // camera follows player or vehicle
@@ -532,8 +543,11 @@ function updateEngineAudio(drivenV: ReturnType<VehicleManager['get']> | null, my
   }
   const candidates: { id: string; x: number; z: number; speed: number; top: number }[] = [];
   for (const v of vehicles.vehicles.values()) {
-    if (v === drivenV || !v.driverId) continue;
+    if (v === drivenV) continue;
     const s = (v.buffer.latest?.extra.speed as number) ?? 0;
+    // driven cars, plus driverless ones still coasting (killed/left driver),
+    // so the engine fades with the roll instead of hard-cutting
+    if (!v.driverId && Math.abs(s) < 1.5) continue;
     candidates.push({ id: v.info.id, x: v.pos.x, z: v.pos.z, speed: s, top: v.spec.topSpeed });
   }
   for (const n of npcs.npcs.values()) {

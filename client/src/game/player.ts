@@ -45,7 +45,13 @@ export class LocalPlayer {
 
   update(dt: number, input: Input, camYaw: number, aiming: boolean, vehicles: VehicleObstacle[]): void {
     if (this.dead) {
+      // keep falling to the ground so a corpse killed mid-jump doesn't hover
       this.anim = 'dead';
+      const ground = groundHeight(this.pos.x, this.pos.z);
+      if (this.pos.y > ground) {
+        this.vel.y -= GRAVITY * dt;
+        this.pos.y = Math.max(ground, this.pos.y + this.vel.y * dt);
+      }
       return;
     }
 
