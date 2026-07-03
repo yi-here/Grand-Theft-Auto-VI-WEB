@@ -9,12 +9,14 @@ import {
   groundHeight,
 } from '@vice/shared';
 import * as tx from '../render/textures.js';
+import { quality } from '../config.js';
 
 export class World {
   private buildingMats: THREE.MeshLambertMaterial[] = [];
   private lampHeads: THREE.InstancedMesh | null = null;
   private water: THREE.Mesh | null = null;
-  private waterTex: THREE.Texture | null = null;
+  private waterMat: THREE.ShaderMaterial | null = null;
+  private shadowCasters: THREE.Object3D[] = [];
 
   constructor(private scene: THREE.Scene, city: CityData) {
     this.buildGround(city);
@@ -24,21 +26,44 @@ export class World {
     this.buildBuildings(city);
     this.buildPalms(city);
     this.buildProps(city);
+    this.applyShadows();
   }
 
-  /** dial building window glow + lamp glow with the day-night cycle */
+  /** buildings/palms cast; all opaque ground receives. World is the first
+   *  thing added to the scene, so its meshes are exactly scene.children here. */
+  private applyShadows(): void {
+    if (!quality.shadows) return;
+    for (const o of this.scene.children) {
+      const m = o as THREE.Mesh;
+      if ((m.isMesh || (m as unknown as THREE.InstancedMesh).isInstancedMesh) && m !== this.water) {
+        m.receiveShadow = true;
+      }
+    }
+    for (const c of this.shadowCasters) c.castShadow = true;
+  }
+
+  /** dial building window glow + lamp glow with the day-night cycle.
+   *  values pushed past the bloom threshold (1.45) so lit windows/lamps glow */
   setNight(n: number): void {
-    for (const m of this.buildingMats) m.emissiveIntensity = n * 1.2;
+    for (const m of this.buildingMats) m.emissiveIntensity = n * 1.9;
     if (this.lampHeads) {
-      (this.lampHeads.material as THREE.MeshLambertMaterial).emissiveIntensity = 0.2 + n * 1.6;
+      (this.lampHeads.material as THREE.MeshLambertMaterial).emissiveIntensity = 0.4 + n * 2.4;
     }
   }
 
   update(dt: number): void {
-    if (this.waterTex) {
-      this.waterTex.offset.x += dt * 0.008;
-      this.waterTex.offset.y += dt * 0.004;
-    }
+    if (this.waterMat) this.waterMat.uniforms.uTime.value += dt;
+  }
+
+  /** feed the ocean shader the current sky tint + sun so it matches the cycle */
+  setSky(skyTint: THREE.Color, sunDir: THREE.Vector3, sunColor: THREE.Color, night: number): void {
+    if (!this.waterMat) return;
+    this.waterMat.uniforms.uSky.value.copy(skyTint);
+    this.waterMat.uniforms.uSunDir.value.copy(sunDir);
+    this.waterMat.uniforms.uSunColor.value.copy(sunColor);
+    const deep = this.waterMat.uniforms.uDeep.value as THREE.Color;
+    deep.setHex(0x0e5a78).multiplyScalar(1 - night * 0.75);
+    (this.waterMat.uniforms.uShallow.value as THREE.Color).setHex(0x2ba6c0).multiplyScalar(1 - night * 0.7);
   }
 
   private buildGround(city: CityData): void {
@@ -149,12 +174,50 @@ export class World {
     sand.position.set(CITY.WATER_X - 10 + sandW / 2, 0, GRID_ORIGIN_Z + GRID_SPAN_Z / 2);
     this.scene.add(sand);
 
-    // ocean
-    this.waterTex = tx.waterTexture();
-    this.water = new THREE.Mesh(
-      new THREE.PlaneGeometry(600, spanZ + 600),
-      new THREE.MeshLambertMaterial({ map: this.waterTex, transparent: true, opacity: 0.92 }),
-    );
+    // ocean: shader with animated ripples, fresnel to sky, sun glint
+    this.waterMat = new THREE.ShaderMaterial({
+      transparent: true,
+      uniforms: {
+        uTime: { value: 0 },
+        uDeep: { value: new THREE.Color(0x0e5a78) },
+        uShallow: { value: new THREE.Color(0x2ba6c0) },
+        uSky: { value: new THREE.Color(0xbfe3f2) },
+        uSunDir: { value: new THREE.Vector3(0.4, 0.5, -0.3).normalize() },
+        uSunColor: { value: new THREE.Color(0xffe9b0) },
+      },
+      vertexShader: `
+        varying vec3 vWorld;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorld = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }`,
+      fragmentShader: `
+        varying vec3 vWorld;
+        varying vec2 vUv;
+        uniform float uTime;
+        uniform vec3 uDeep, uShallow, uSky, uSunDir, uSunColor;
+        void main() {
+          // layered sine ripples -> a cheap normal
+          vec2 p = vWorld.xz * 0.08;
+          float w = sin(p.x * 1.7 + uTime * 1.1) * 0.5
+                  + sin(p.y * 2.3 - uTime * 0.9) * 0.3
+                  + sin((p.x + p.y) * 3.1 + uTime * 1.7) * 0.2;
+          vec3 nrm = normalize(vec3(w * 0.35, 1.0, w * 0.25));
+          vec3 viewDir = normalize(cameraPosition - vWorld);
+          float fres = pow(1.0 - max(dot(viewDir, nrm), 0.0), 3.0);
+          vec3 base = mix(uDeep, uShallow, clamp(w * 0.5 + 0.5, 0.0, 1.0));
+          vec3 col = mix(base, uSky, fres * 0.7);
+          // sun glint
+          vec3 h = normalize(uSunDir + viewDir);
+          float spec = pow(max(dot(nrm, h), 0.0), 120.0);
+          col += uSunColor * spec * 2.0;
+          gl_FragColor = vec4(col, 0.9);
+        }`,
+    });
+    this.water = new THREE.Mesh(new THREE.PlaneGeometry(600, spanZ + 600, 40, 40), this.waterMat);
     this.water.rotation.x = -Math.PI / 2;
     this.water.position.set(CITY.WATER_X - 300, CITY.WATER_LEVEL, GRID_ORIGIN_Z + GRID_SPAN_Z / 2);
     this.scene.add(this.water);
@@ -197,6 +260,7 @@ export class World {
         mesh.setColorAt(k, new THREE.Color(b.color));
       });
       mesh.instanceMatrix.needsUpdate = true;
+      this.shadowCasters.push(mesh);
       this.scene.add(mesh);
     }
   }
@@ -244,6 +308,7 @@ export class World {
     });
     trunks.instanceMatrix.needsUpdate = true;
     crowns.instanceMatrix.needsUpdate = true;
+    this.shadowCasters.push(trunks, crowns);
     this.scene.add(trunks, crowns);
   }
 

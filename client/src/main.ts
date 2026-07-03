@@ -11,6 +11,9 @@ import { Input } from './input.js';
 import { Net } from './net/socket.js';
 import { World } from './game/world.js';
 import { SkySystem } from './render/sky.js';
+import { PostFX } from './render/post.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { quality } from './config.js';
 import { glowTexture } from './render/textures.js';
 import { LocalPlayer, VehicleObstacle } from './game/player.js';
 import { ThirdPersonCamera } from './game/camera.js';
@@ -30,6 +33,9 @@ import { Scoreboard } from './ui/scoreboard.js';
 
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug');
+const LOW = params.has('low');
+quality.shadows = !LOW;
+quality.bloom = !LOW;
 
 injectStyles();
 
@@ -39,17 +45,29 @@ const uiRoot = document.getElementById('ui') as HTMLDivElement;
 const renderer = new THREE.WebGLRenderer({
   canvas, antialias: false, preserveDrawingBuffer: DEBUG,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+const pixelRatio = Math.min(window.devicePixelRatio, 1.5);
+renderer.setPixelRatio(pixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+renderer.info.autoReset = false; // reset once per frame so drawCalls() counts all passes
+if (quality.shadows) {
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+}
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1200);
 camera.position.set(20, 30, 200);
 
+let post: PostFX | null = null;
+
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  post?.setSize(window.innerWidth, window.innerHeight);
 });
 
 const input = new Input(canvas);
@@ -120,8 +138,15 @@ function startGame(welcome: WelcomeMsg): void {
   const moveGrid = new SpatialGrid([...buildingBoxes(city), ...solid, ...softPropBoxes(city)]);
   const vehGrid = new SpatialGrid([...buildingBoxes(city), ...solid]);
 
+  // neutral image-based lighting so the metallic car paint/glass reflects
+  // something instead of rendering black
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environmentIntensity = 0.5; // subtle reflections, don't blow car highlights
+
   world = new World(scene, city);
-  sky = new SkySystem(scene, glowTexture());
+  sky = new SkySystem(scene, glowTexture(), quality.shadows);
+  if (quality.bloom) post = new PostFX(renderer, scene, camera, pixelRatio);
   effects = new Effects(scene);
   remotes = new RemotePlayerManager(scene);
   vehicles = new VehicleManager(scene, vehGrid);
@@ -407,6 +432,8 @@ function frame(): void {
     world.update(dt);
     sky.update(net.serverNow(), camera.position, debugDayPhase);
     world.setNight(sky.nightAmount);
+    world.setSky(sky.skyTint, sky.sunDirection, sky.sunTint, sky.nightAmount);
+    post?.setNight(sky.nightAmount);
     effects.update(dt);
     lastSpeed = Math.abs(speed);
 
@@ -447,7 +474,9 @@ function frame(): void {
     }
   }
 
-  renderer.render(scene, camera);
+  renderer.info.reset();
+  if (post) post.render();
+  else renderer.render(scene, camera);
   input.endFrame();
 }
 

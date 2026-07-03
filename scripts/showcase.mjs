@@ -23,33 +23,35 @@ try {
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader', '--use-angle=swiftshader',
       '--disable-renderer-backgrounding', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows'],
   });
-  // two players so the scene shows another avatar
-  const spectator = await join(browser, 'Rico', 1);
-  const hero = await join(browser, 'Player', 1);
+  // full graphics (no ?low): shadows + bloom + shader sky/water
+  const hero = await join(browser, 'Player');
   await hero.bringToFront();
+
+  // bright late-morning: on-foot hero shot with shadows
+  await hero.evaluate('window.__game.setDayPhase(0.2)');
+  await hero.waitForTimeout(1500);
+  await hero.screenshot({ path: path.join(ART, 'showcase-foot.png') });
 
   // drive to a car and get in
   await hero.keyboard.down('w');
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 300; i++) {
     const s = await hero.evaluate('(() => ({ p: window.__game.pos(), v: window.__game.nearestVehicle() }))()');
     if (!s.v || s.v.dist < 2.6) break;
     await hero.evaluate(`window.__game.setCamYaw(${Math.atan2(s.v.x - s.p[0], s.v.z - s.p[2])})`);
-    await hero.waitForTimeout(100);
+    await hero.waitForTimeout(110);
   }
   await hero.keyboard.up('w');
   await hero.keyboard.press('e');
-  await hero.waitForTimeout(500);
+  await hero.waitForTimeout(600);
   await hero.keyboard.down('w');
-  await hero.waitForTimeout(1800);
-  await hero.evaluate('window.__game.setDayPhase(0.02)'); // golden dawn
-  await hero.waitForTimeout(200);
+  await hero.waitForTimeout(2200);
   await hero.screenshot({ path: path.join(ART, 'showcase-drive.png') });
   await hero.keyboard.up('w');
 
-  // dusk skyline
-  await hero.evaluate('window.__game.setDayPhase(0.52)');
-  await hero.waitForTimeout(700);
-  await hero.screenshot({ path: path.join(ART, 'showcase-dusk.png') });
+  // neon night: bloom on lit windows, lamps, headlights, taxi sign
+  await hero.evaluate('window.__game.setDayPhase(0.79)');
+  await hero.waitForTimeout(1200);
+  await hero.screenshot({ path: path.join(ART, 'showcase-night.png') });
 
   console.log('[showcase] screenshots written to docs/');
 } finally {

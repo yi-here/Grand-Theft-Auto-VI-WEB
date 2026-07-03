@@ -6,8 +6,10 @@ Everything is original and procedural: **zero art assets**. Geometry is built fr
 
 | | |
 |---|---|
-| ![driving at dawn](docs/showcase-drive.png) | ![dusk skyline](docs/showcase-dusk.png) |
-| ![on foot, day](docs/gameplay-day.png) | ![neon night](docs/gameplay-night.png) |
+| ![on foot, shadows](docs/showcase-foot.png) | ![driving downtown](docs/showcase-drive.png) |
+| ![neon night](docs/showcase-night.png) | ![full pipeline](docs/fullgfx.png) |
+
+_Real-time shadows, bloom-lit neon, filmic tone mapping, a shader sky and ocean — all rendered from procedural geometry, no art assets._
 
 ## Play
 
@@ -39,6 +41,7 @@ Open **http://localhost:8080** in several browser tabs (or send the URL to frien
 - **Living streets**: pedestrians strolling the sidewalks (they ragdoll if you drive through them…) and AI traffic following the road grid.
 - **Wanted level**: hurt enough civilians and ★-stars appear — police cruisers hunt you down until you outrun the heat.
 - **Day-night cycle** with dusk skies, lit windows and glowing street lamps, synced across all players.
+- **Modern rendering**: real-time sun shadows, HDR bloom on neon/lights, ACES filmic tone mapping, a gradient shader sky with a sun disc, an animated fresnel ocean, and glossy image-based-lit car paint. Add `?low` to the URL on a weak machine to drop shadows and bloom.
 
 ## Development
 

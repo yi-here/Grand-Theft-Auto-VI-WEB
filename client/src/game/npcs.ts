@@ -93,8 +93,8 @@ export class NpcManager {
         for (const w of npc.wheels) w.rotation.x += (npc.speedEst / 0.34) * dt;
         if (npc.lightbar.length === 2) {
           const phase = Math.floor(performance.now() / 220) % 2;
-          (npc.lightbar[0].material as THREE.MeshLambertMaterial).emissiveIntensity = phase ? 1.8 : 0.15;
-          (npc.lightbar[1].material as THREE.MeshLambertMaterial).emissiveIntensity = phase ? 0.15 : 1.8;
+          (npc.lightbar[0].material as THREE.MeshLambertMaterial).emissiveIntensity = phase ? 2.8 : 0.1;
+          (npc.lightbar[1].material as THREE.MeshLambertMaterial).emissiveIntensity = phase ? 0.1 : 2.8;
         }
       }
     }

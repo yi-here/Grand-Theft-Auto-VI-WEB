@@ -7,6 +7,7 @@ import {
   clamp, groundHeight, resolveCircleAABB,
 } from '@vice/shared';
 import { InterpBuffer } from '../net/interpolation.js';
+import { quality } from '../config.js';
 import type { Input } from '../input.js';
 
 export interface DriveState {
@@ -47,8 +48,9 @@ export function buildVehicleMesh(kind: VehicleKind, color: number): {
 } {
   const spec = VEHICLES[kind];
   const group = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({ color });
-  const glassMat = new THREE.MeshLambertMaterial({ color: 0x1c2b3a });
+  // glossy painted metal + dark reflective glass (bloom picks up highlights)
+  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.35 });
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0x0d1a26, roughness: 0.1, metalness: 0.7 });
   const L = spec.length;
   const W = spec.width;
   const H = spec.height;
@@ -92,7 +94,7 @@ export function buildVehicleMesh(kind: VehicleKind, color: number): {
   if (kind === 'taxi') {
     const sign = new THREE.Mesh(
       new THREE.BoxGeometry(0.7, 0.22, 0.34),
-      new THREE.MeshLambertMaterial({ color: 0xfff2b0, emissive: 0x907020, emissiveIntensity: 0.6 }),
+      new THREE.MeshLambertMaterial({ color: 0xfff2b0, emissive: 0xffc020, emissiveIntensity: 2.6 }),
     );
     sign.position.set(0, 0.3 + H * 1.06, 0);
     group.add(sign);
@@ -100,12 +102,12 @@ export function buildVehicleMesh(kind: VehicleKind, color: number): {
   if (kind === 'police') {
     const red = new THREE.Mesh(
       new THREE.BoxGeometry(0.4, 0.16, 0.3),
-      new THREE.MeshLambertMaterial({ color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 1 }),
+      new THREE.MeshLambertMaterial({ color: 0xff2222, emissive: 0xff0000, emissiveIntensity: 2.5 }),
     );
     red.position.set(-0.3, 0.3 + H * 1.05, 0);
     const blue = new THREE.Mesh(
       new THREE.BoxGeometry(0.4, 0.16, 0.3),
-      new THREE.MeshLambertMaterial({ color: 0x2244ff, emissive: 0x0000ff, emissiveIntensity: 1 }),
+      new THREE.MeshLambertMaterial({ color: 0x2244ff, emissive: 0x0000ff, emissiveIntensity: 2.5 }),
     );
     blue.position.set(0.3, 0.3 + H * 1.05, 0);
     group.add(red, blue);
@@ -116,15 +118,15 @@ export function buildVehicleMesh(kind: VehicleKind, color: number): {
     group.add(stripe);
   }
 
-  // headlights / taillights
+  // headlights / taillights (emissive above the bloom threshold so they glow)
   const head = new THREE.Mesh(
     new THREE.BoxGeometry(W * 0.8, 0.12, 0.06),
-    new THREE.MeshLambertMaterial({ color: 0xfff6cc, emissive: 0xfff0aa, emissiveIntensity: 0.7 }),
+    new THREE.MeshLambertMaterial({ color: 0xfff6cc, emissive: 0xfff0aa, emissiveIntensity: 2.4 }),
   );
   head.position.set(0, 0.3 + H * 0.35, L / 2 - 0.02);
   const tail = new THREE.Mesh(
     new THREE.BoxGeometry(W * 0.8, 0.1, 0.06),
-    new THREE.MeshLambertMaterial({ color: 0xaa1122, emissive: 0xcc0022, emissiveIntensity: 0.6 }),
+    new THREE.MeshLambertMaterial({ color: 0xaa1122, emissive: 0xff0022, emissiveIntensity: 2.2 }),
   );
   tail.position.set(0, 0.3 + H * 0.35, -L / 2 + 0.02);
   group.add(head, tail);
@@ -143,6 +145,9 @@ export function buildVehicleMesh(kind: VehicleKind, color: number): {
     wheels.push(wheel);
   }
 
+  if (quality.shadows) {
+    group.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = true; });
+  }
   return { group, wheels, lightbar };
 }
 
@@ -341,8 +346,8 @@ export class VehicleManager {
       // police lightbar strobe
       if (v.lightbar.length === 2) {
         const phase = Math.floor(performance.now() / 250) % 2;
-        (v.lightbar[0].material as THREE.MeshLambertMaterial).emissiveIntensity = phase ? 1.6 : 0.15;
-        (v.lightbar[1].material as THREE.MeshLambertMaterial).emissiveIntensity = phase ? 0.15 : 1.6;
+        (v.lightbar[0].material as THREE.MeshLambertMaterial).emissiveIntensity = phase ? 2.8 : 0.1;
+        (v.lightbar[1].material as THREE.MeshLambertMaterial).emissiveIntensity = phase ? 0.1 : 2.8;
       }
     }
   }

@@ -55,7 +55,16 @@ export class Input {
   }
 
   requestLock(): void {
-    if (!this.pointerLocked) this.canvas.requestPointerLock();
+    // may reject if the user-gesture context has lapsed (e.g. after an async
+    // connect); harmless — the next click will lock. Don't let it throw.
+    if (!this.pointerLocked) {
+      try {
+        const r = this.canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+        if (r && typeof r.catch === 'function') r.catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   isDown(code: string): boolean {

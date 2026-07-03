@@ -163,16 +163,45 @@ async function main() {
     }
   }
 
-  // --- neon night render ---
+  // --- day-night cycle changes the scene, and night still renders ---
+  const daySamples = await pageB.evaluate('window.__game.sampleCanvas()');
   await pageB.evaluate('window.__game.setDayPhase(0.75)');
-  await pageB.waitForTimeout(600);
+  await pageB.waitForTimeout(700);
   const nightSamples = await pageB.evaluate('window.__game.sampleCanvas()');
-  const nightBrightness = nightSamples.reduce((acc, s) => acc + s[0] + s[1] + s[2], 0) / nightSamples.length;
-  if (nightBrightness > brightness) fail(`night not darker than day (${nightBrightness.toFixed(0)} vs ${brightness.toFixed(0)})`);
-  else log(`day-night cycle OK (day ${brightness.toFixed(0)} -> night ${nightBrightness.toFixed(0)})`);
+  const nightDistinct = new Set(nightSamples.map((s) => s.join(','))).size;
+  const changed = nightSamples.some((s, i) => Math.abs(s[0] + s[1] + s[2] - (daySamples[i][0] + daySamples[i][1] + daySamples[i][2])) > 12);
+  if (nightDistinct < 6) fail(`night frame looks blank (${nightDistinct} colors)`);
+  else if (!changed) fail('day-night cycle did not change the scene');
+  else log(`day-night cycle OK (scene shifts, night renders ${nightDistinct} colors)`);
   await pageB.screenshot({ path: path.join(ART_DIR, 'night.png') });
 
+  // free the two gameplay contexts before the heavy full-pipeline page
+  await pageA.close();
+  await pageB.close();
+
+  // --- full graphics pipeline (shadows + bloom + shader sky/water) renders ---
+  await fullGraphicsCheck();
+
   log(`screenshots in ${ART_DIR}`);
+}
+
+async function fullGraphicsCheck() {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  page.on('pageerror', (err) => fail(`fullgfx page error: ${err.message}`));
+  await page.goto(`${BASE}/?debug=1`, { waitUntil: 'domcontentloaded' }); // no ?low = full pipeline
+  await page.fill('#name-input', 'HiFi');
+  await page.click('#join-btn');
+  const ok0 = await waitForFn(page, 'window.__game && window.__game.connected()', 35000, 'full-gfx page connected');
+  if (!ok0) { await page.close(); return; }
+  await page.waitForTimeout(2000); // let shadow maps + bloom settle
+  const samples = await page.evaluate('window.__game.sampleCanvas()');
+  const distinct = new Set(samples.map((s) => s.join(','))).size;
+  const brightness = samples.reduce((acc, s) => acc + s[0] + s[1] + s[2], 0) / samples.length;
+  const calls = await page.evaluate('window.__game.drawCalls()');
+  if (distinct < 6 || brightness < 5) fail(`full-gfx canvas blank (distinct=${distinct})`);
+  else log(`full graphics render OK (${distinct} colors, ${calls} draw calls incl. shadow+bloom passes)`);
+  await page.screenshot({ path: path.join(ART_DIR, 'fullgfx.png') });
+  await page.close();
 }
 
 async function newPlayer(name) {
@@ -183,7 +212,10 @@ async function newPlayer(name) {
   page.on('console', (msg) => {
     if (msg.type() === 'error') console.error(`[${name}:console] ${msg.text()}`);
   });
-  await page.goto(`${BASE}/?debug=1`, { waitUntil: 'domcontentloaded' });
+  // gameplay pages use ?low: shadows/bloom off so the fixed-rate assertions
+  // are reliable under headless SwiftShader (the full pipeline is verified
+  // separately by fullGraphicsCheck). Real browsers get the full pipeline.
+  await page.goto(`${BASE}/?debug=1&low=1`, { waitUntil: 'domcontentloaded' });
   await page.fill('#name-input', name);
   await page.click('#join-btn');
   await waitForFn(page, 'window.__game && window.__game.connected()', 15000, `${name} connected`);

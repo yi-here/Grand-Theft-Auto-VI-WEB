@@ -3,6 +3,7 @@
 // player, remote players and pedestrians.
 
 import * as THREE from 'three';
+import { quality } from '../config.js';
 
 export interface Avatar {
   group: THREE.Group;
@@ -82,6 +83,10 @@ export function buildAvatar(shirtColor: number, variant = 0): Avatar {
   gun.position.set(0, -0.62, 0.14);
   gun.visible = false;
   armR.add(gun);
+
+  if (quality.shadows) {
+    group.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = true; });
+  }
 
   return { group, armL, armR, legL, legR, head, torso, gun, walkPhase: 0, deadT: 0 };
 }
